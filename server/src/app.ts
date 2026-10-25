@@ -12,10 +12,10 @@ import ordersRoutes from './routes/orders.routes.js';
 import bookingsRoutes from './routes/bookings.routes.js';
 import potteryRoutes from './routes/pottery.routes.js';
 
-// Initialize schema on load
-initDatabase();
-
 export const app = express();
+
+// Trust reverse proxy (essential for Render / HTTPS load balancers)
+app.set('trust proxy', 1);
 
 app.use(cors({
   origin: true,
@@ -47,7 +47,11 @@ app.use('/api/pottery', potteryRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.status(200).json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+  });
 });
 
 // Production: serve built client assets

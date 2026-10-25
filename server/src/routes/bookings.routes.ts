@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import { db } from '../db/db.js';
-import { requireAuth, requireAdmin, requireCustomer } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireCustomer, ApiHttpError } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -28,10 +28,10 @@ function getDaysDiff(targetDate: Date): number {
 }
 
 // GET /api/bookings/rate - Get current wall painting rate
-router.get('/rate', (req: Request, res: Response) => {
+router.get('/rate', async (req: Request, res: Response) => {
   try {
-    const rateSetting = db.prepare("SELECT value FROM settings WHERE key = 'mural_rate_per_sqft'").get() as { value: string } | undefined;
-    const currencySetting = db.prepare("SELECT value FROM settings WHERE key = 'currency'").get() as { value: string } | undefined;
+    const rateSetting = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'mural_rate_per_sqft'");
+    const currencySetting = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'currency'");
 
     const ratePerSqFt = rateSetting ? Number(rateSetting.value) : 150;
     const currency = currencySetting ? currencySetting.value : 'INR';
@@ -44,14 +44,14 @@ router.get('/rate', (req: Request, res: Response) => {
 });
 
 // GET /api/bookings/unavailable-dates - Get all dates currently taken
-router.get('/unavailable-dates', (req: Request, res: Response) => {
+router.get('/unavailable-dates', async (req: Request, res: Response) => {
   try {
-    const rows = db.prepare(`
-      SELECT DISTINCT booking_date AS bookingDate
+    const rows = await db.all<any>(`
+      SELECT DISTINCT booking_date AS "bookingDate"
       FROM wall_bookings
       WHERE status IN ('requested', 'confirmed')
       ORDER BY booking_date ASC
-    `).all() as Array<{ bookingDate: string }>;
+    `);
 
     const dates = rows.map((r) => r.bookingDate);
     return res.status(200).json({ unavailableDates: dates });
@@ -62,7 +62,7 @@ router.get('/unavailable-dates', (req: Request, res: Response) => {
 });
 
 // GET /api/bookings - List bookings
-router.get('/', requireAuth, (req: Request, res: Response) => {
+router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const isAdmin = user.role === 'admin' || user.role === 'studio';
@@ -70,24 +70,24 @@ router.get('/', requireAuth, (req: Request, res: Response) => {
     let bookings: any[];
 
     if (isAdmin) {
-      bookings = db.prepare(`
-        SELECT b.id, b.customer_id AS customerId, b.booking_date AS bookingDate,
-               b.wall_size_sqft AS wallSizeSqFt, b.address, b.rate_per_sqft AS ratePerSqFt,
-               b.price, b.status, b.created_at AS createdAt, b.updated_at AS updatedAt,
-               u.name AS customerName, u.email AS customerEmail
+      bookings = await db.all(`
+        SELECT b.id, b.customer_id AS "customerId", b.booking_date AS "bookingDate",
+               b.wall_size_sqft AS "wallSizeSqFt", b.address, b.rate_per_sqft AS "ratePerSqFt",
+               b.price, b.status, b.created_at AS "createdAt", b.updated_at AS "updatedAt",
+               u.name AS "customerName", u.email AS "customerEmail"
         FROM wall_bookings b
         JOIN users u ON b.customer_id = u.id
         ORDER BY b.booking_date ASC, b.created_at DESC
-      `).all();
+      `);
     } else {
-      bookings = db.prepare(`
-        SELECT b.id, b.customer_id AS customerId, b.booking_date AS bookingDate,
-               b.wall_size_sqft AS wallSizeSqFt, b.address, b.rate_per_sqft AS ratePerSqFt,
-               b.price, b.status, b.created_at AS createdAt, b.updated_at AS updatedAt
+      bookings = await db.all(`
+        SELECT b.id, b.customer_id AS "customerId", b.booking_date AS "bookingDate",
+               b.wall_size_sqft AS "wallSizeSqFt", b.address, b.rate_per_sqft AS "ratePerSqFt",
+               b.price, b.status, b.created_at AS "createdAt", b.updated_at AS "updatedAt"
         FROM wall_bookings b
         WHERE b.customer_id = ?
         ORDER BY b.booking_date ASC, b.created_at DESC
-      `).all(user.id);
+      `, [user.id]);
     }
 
     return res.status(200).json({ bookings });
@@ -98,20 +98,20 @@ router.get('/', requireAuth, (req: Request, res: Response) => {
 });
 
 // GET /api/bookings/:id - Single booking
-router.get('/:id', requireAuth, (req: Request, res: Response) => {
+router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const isAdmin = user.role === 'admin' || user.role === 'studio';
 
-    const booking = db.prepare(`
-      SELECT b.id, b.customer_id AS customerId, b.booking_date AS bookingDate,
-             b.wall_size_sqft AS wallSizeSqFt, b.address, b.rate_per_sqft AS ratePerSqFt,
-             b.price, b.status, b.created_at AS createdAt, b.updated_at AS updatedAt,
-             u.name AS customerName, u.email AS customerEmail
+    const booking = await db.get<any>(`
+      SELECT b.id, b.customer_id AS "customerId", b.booking_date AS "bookingDate",
+             b.wall_size_sqft AS "wallSizeSqFt", b.address, b.rate_per_sqft AS "ratePerSqFt",
+             b.price, b.status, b.created_at AS "createdAt", b.updated_at AS "updatedAt",
+             u.name AS "customerName", u.email AS "customerEmail"
       FROM wall_bookings b
       JOIN users u ON b.customer_id = u.id
       WHERE b.id = ?
-    `).get(req.params.id) as any;
+    `, [req.params.id]);
 
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
@@ -129,7 +129,7 @@ router.get('/:id', requireAuth, (req: Request, res: Response) => {
 });
 
 // POST /api/bookings - Customer books a wall painting
-router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => {
+router.post('/', requireAuth, requireCustomer, async (req: Request, res: Response) => {
   try {
     const { bookingDate, wallSizeSqFt, address } = req.body;
 
@@ -163,51 +163,46 @@ router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => 
     }
 
     // Calculate price using seed rate
-    const rateRow = db.prepare("SELECT value FROM settings WHERE key = 'mural_rate_per_sqft'").get() as { value: string } | undefined;
+    const rateRow = await db.get<{ value: string }>("SELECT value FROM settings WHERE key = 'mural_rate_per_sqft'");
     const rate = rateRow ? Number(rateRow.value) : 150;
     const price = Math.round(size * rate);
-
-    db.exec('BEGIN IMMEDIATE');
-
-    // Business rule: Each date can be booked only once
-    const existing = db.prepare(`
-      SELECT id FROM wall_bookings
-      WHERE booking_date = ? AND status IN ('requested', 'confirmed')
-    `).get(bookingDate);
-
-    if (existing) {
-      db.exec('ROLLBACK');
-      return res.status(409).json({
-        error: 'This date has already been booked. Please choose another date.',
-      });
-    }
-
     const bookingId = crypto.randomUUID();
-    db.prepare(`
-      INSERT INTO wall_bookings (id, customer_id, booking_date, wall_size_sqft, address, rate_per_sqft, price, status)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'requested')
-    `).run(bookingId, req.user!.id, bookingDate, size, address.trim(), rate, price);
 
-    db.exec('COMMIT');
+    let created: any;
 
-    const created = db.prepare(`
-      SELECT id, customer_id AS customerId, booking_date AS bookingDate,
-             wall_size_sqft AS wallSizeSqFt, address, rate_per_sqft AS ratePerSqFt,
-             price, status, created_at AS createdAt
-      FROM wall_bookings WHERE id = ?
-    `).get(bookingId);
+    await db.transaction(async (tx) => {
+      // Business rule: Each date can be booked only once
+      const existing = await tx.get<any>(`
+        SELECT id FROM wall_bookings
+        WHERE booking_date = ? AND status IN ('requested', 'confirmed')
+      `, [bookingDate]);
+
+      if (existing) {
+        throw new ApiHttpError(409, 'This date has already been booked. Please choose another date.');
+      }
+
+      await tx.run(`
+        INSERT INTO wall_bookings (id, customer_id, booking_date, wall_size_sqft, address, rate_per_sqft, price, status)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'requested')
+      `, [bookingId, req.user!.id, bookingDate, size, address.trim(), rate, price]);
+
+      created = await tx.get(`
+        SELECT id, customer_id AS "customerId", booking_date AS "bookingDate",
+               wall_size_sqft AS "wallSizeSqFt", address, rate_per_sqft AS "ratePerSqFt",
+               price, status, created_at AS "createdAt"
+        FROM wall_bookings WHERE id = ?
+      `, [bookingId]);
+    });
 
     return res.status(201).json({
       message: 'Wall painting booking requested successfully',
       booking: created,
     });
   } catch (err: any) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // ignore
+    if (err instanceof ApiHttpError) {
+      return res.status(err.status).json({ error: err.message });
     }
-    if (err.message && err.message.includes('UNIQUE constraint failed')) {
+    if (err.message && (err.message.includes('UNIQUE constraint failed') || err.message.includes('duplicate key') || err.code === '23505')) {
       return res.status(409).json({
         error: 'This date has already been booked by another customer',
       });
@@ -218,7 +213,7 @@ router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => 
 });
 
 // PUT /api/bookings/:id/status - Admin confirms or declines booking
-router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Response) => {
+router.put('/:id/status', requireAuth, requireAdmin, async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
     const bookingId = req.params.id;
@@ -227,7 +222,7 @@ router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Respons
       return res.status(400).json({ error: "Status must be 'confirmed' or 'declined'" });
     }
 
-    const booking = db.prepare('SELECT * FROM wall_bookings WHERE id = ?').get(bookingId) as any;
+    const booking = await db.get<any>('SELECT * FROM wall_bookings WHERE id = ?', [bookingId]);
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
     }
@@ -236,20 +231,20 @@ router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Respons
       return res.status(400).json({ error: 'Cannot change status of a cancelled booking' });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE wall_bookings
       SET status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(status, bookingId);
+    `, [status, bookingId]);
 
-    const updated = db.prepare(`
-      SELECT b.id, b.customer_id AS customerId, b.booking_date AS bookingDate,
-             b.wall_size_sqft AS wallSizeSqFt, b.address, b.price, b.status,
-             b.updated_at AS updatedAt, u.name AS customerName, u.email AS customerEmail
+    const updated = await db.get(`
+      SELECT b.id, b.customer_id AS "customerId", b.booking_date AS "bookingDate",
+             b.wall_size_sqft AS "wallSizeSqFt", b.address, b.price, b.status,
+             b.updated_at AS "updatedAt", u.name AS "customerName", u.email AS "customerEmail"
       FROM wall_bookings b
       JOIN users u ON b.customer_id = u.id
       WHERE b.id = ?
-    `).get(bookingId);
+    `, [bookingId]);
 
     return res.status(200).json({
       message: `Booking has been ${status}`,
@@ -262,7 +257,7 @@ router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Respons
 });
 
 // PUT /api/bookings/:id/cancel - Customer cancels own booking
-router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
+router.put('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
   const user = req.user!;
   const isAdmin = user.role === 'admin' || user.role === 'studio';
 
@@ -274,7 +269,7 @@ router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
   const bookingId = req.params.id;
 
   try {
-    const booking = db.prepare('SELECT * FROM wall_bookings WHERE id = ?').get(bookingId) as any;
+    const booking = await db.get<any>('SELECT * FROM wall_bookings WHERE id = ?', [bookingId]);
 
     if (!booking) {
       return res.status(404).json({ error: 'Booking not found' });
@@ -306,17 +301,17 @@ router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
       });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE wall_bookings
       SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(bookingId);
+    `, [bookingId]);
 
-    const updated = db.prepare(`
-      SELECT id, customer_id AS customerId, booking_date AS bookingDate,
-             wall_size_sqft AS wallSizeSqFt, address, price, status, updated_at AS updatedAt
+    const updated = await db.get(`
+      SELECT id, customer_id AS "customerId", booking_date AS "bookingDate",
+             wall_size_sqft AS "wallSizeSqFt", address, price, status, updated_at AS "updatedAt"
       FROM wall_bookings WHERE id = ?
-    `).get(bookingId);
+    `, [bookingId]);
 
     return res.status(200).json({
       message: 'Booking cancelled successfully. The date is now available again.',

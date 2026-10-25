@@ -25,10 +25,10 @@ function getDaysDiff(targetDate: Date): number {
 }
 
 // GET /api/pottery/options - List items and glazes from seed data
-router.get('/options', (req: Request, res: Response) => {
+router.get('/options', async (req: Request, res: Response) => {
   try {
-    const items = db.prepare('SELECT id, name FROM pottery_items ORDER BY id ASC').all();
-    const glazes = db.prepare('SELECT id, name FROM pottery_glazes ORDER BY id ASC').all();
+    const items = await db.all('SELECT id, name FROM pottery_items ORDER BY id ASC');
+    const glazes = await db.all('SELECT id, name FROM pottery_glazes ORDER BY id ASC');
 
     return res.status(200).json({ items, glazes });
   } catch (err: any) {
@@ -38,7 +38,7 @@ router.get('/options', (req: Request, res: Response) => {
 });
 
 // GET /api/pottery - List pottery requests
-router.get('/', requireAuth, (req: Request, res: Response) => {
+router.get('/', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const isAdmin = user.role === 'admin' || user.role === 'studio';
@@ -46,30 +46,30 @@ router.get('/', requireAuth, (req: Request, res: Response) => {
     let requests: any[];
 
     if (isAdmin) {
-      requests = db.prepare(`
-        SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-               pr.quantity, pr.needed_by_date AS neededByDate, pr.status,
-               pr.created_at AS createdAt, pr.updated_at AS updatedAt,
-               pi.name AS itemName, pg.name AS glazeName,
-               u.name AS customerName, u.email AS customerEmail
+      requests = await db.all(`
+        SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+               pr.quantity, pr.needed_by_date AS "neededByDate", pr.status,
+               pr.created_at AS "createdAt", pr.updated_at AS "updatedAt",
+               pi.name AS "itemName", pg.name AS "glazeName",
+               u.name AS "customerName", u.email AS "customerEmail"
         FROM pottery_requests pr
         JOIN pottery_items pi ON pr.item_id = pi.id
         JOIN pottery_glazes pg ON pr.glaze_id = pg.id
         JOIN users u ON pr.customer_id = u.id
         ORDER BY pr.needed_by_date ASC, pr.created_at DESC
-      `).all();
+      `);
     } else {
-      requests = db.prepare(`
-        SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-               pr.quantity, pr.needed_by_date AS neededByDate, pr.status,
-               pr.created_at AS createdAt, pr.updated_at AS updatedAt,
-               pi.name AS itemName, pg.name AS glazeName
+      requests = await db.all(`
+        SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+               pr.quantity, pr.needed_by_date AS "neededByDate", pr.status,
+               pr.created_at AS "createdAt", pr.updated_at AS "updatedAt",
+               pi.name AS "itemName", pg.name AS "glazeName"
         FROM pottery_requests pr
         JOIN pottery_items pi ON pr.item_id = pi.id
         JOIN pottery_glazes pg ON pr.glaze_id = pg.id
         WHERE pr.customer_id = ?
         ORDER BY pr.needed_by_date ASC, pr.created_at DESC
-      `).all(user.id);
+      `, [user.id]);
     }
 
     return res.status(200).json({ requests });
@@ -80,23 +80,23 @@ router.get('/', requireAuth, (req: Request, res: Response) => {
 });
 
 // GET /api/pottery/:id - Single pottery request
-router.get('/:id', requireAuth, (req: Request, res: Response) => {
+router.get('/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const user = req.user!;
     const isAdmin = user.role === 'admin' || user.role === 'studio';
 
-    const reqData = db.prepare(`
-      SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-             pr.quantity, pr.needed_by_date AS neededByDate, pr.status,
-             pr.created_at AS createdAt, pr.updated_at AS updatedAt,
-             pi.name AS itemName, pg.name AS glazeName,
-             u.name AS customerName, u.email AS customerEmail
+    const reqData = await db.get<any>(`
+      SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+             pr.quantity, pr.needed_by_date AS "neededByDate", pr.status,
+             pr.created_at AS "createdAt", pr.updated_at AS "updatedAt",
+             pi.name AS "itemName", pg.name AS "glazeName",
+             u.name AS "customerName", u.email AS "customerEmail"
       FROM pottery_requests pr
       JOIN pottery_items pi ON pr.item_id = pi.id
       JOIN pottery_glazes pg ON pr.glaze_id = pg.id
       JOIN users u ON pr.customer_id = u.id
       WHERE pr.id = ?
-    `).get(req.params.id) as any;
+    `, [req.params.id]);
 
     if (!reqData) {
       return res.status(404).json({ error: 'Pottery request not found' });
@@ -114,18 +114,18 @@ router.get('/:id', requireAuth, (req: Request, res: Response) => {
 });
 
 // POST /api/pottery - Customer creates pottery request
-router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => {
+router.post('/', requireAuth, requireCustomer, async (req: Request, res: Response) => {
   try {
     const { itemId, glazeId, quantity, neededByDate } = req.body;
 
     // Validate item
-    const item = db.prepare('SELECT id, name FROM pottery_items WHERE id = ?').get(itemId);
+    const item = await db.get('SELECT id, name FROM pottery_items WHERE id = ?', [itemId]);
     if (!item) {
       return res.status(400).json({ error: 'Invalid pottery item selected from seed data' });
     }
 
     // Validate glaze
-    const glaze = db.prepare('SELECT id, name FROM pottery_glazes WHERE id = ?').get(glazeId);
+    const glaze = await db.get('SELECT id, name FROM pottery_glazes WHERE id = ?', [glazeId]);
     if (!glaze) {
       return res.status(400).json({ error: 'Invalid glaze selected from seed data' });
     }
@@ -154,20 +154,20 @@ router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => 
     }
 
     const requestId = crypto.randomUUID();
-    db.prepare(`
+    await db.run(`
       INSERT INTO pottery_requests (id, customer_id, item_id, glaze_id, quantity, needed_by_date, status)
       VALUES (?, ?, ?, ?, ?, ?, 'requested')
-    `).run(requestId, req.user!.id, itemId, glazeId, qty, neededByDate);
+    `, [requestId, req.user!.id, itemId, glazeId, qty, neededByDate]);
 
-    const created = db.prepare(`
-      SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-             pr.quantity, pr.needed_by_date AS neededByDate, pr.status, pr.created_at AS createdAt,
-             pi.name AS itemName, pg.name AS glazeName
+    const created = await db.get(`
+      SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+             pr.quantity, pr.needed_by_date AS "neededByDate", pr.status, pr.created_at AS "createdAt",
+             pi.name AS "itemName", pg.name AS "glazeName"
       FROM pottery_requests pr
       JOIN pottery_items pi ON pr.item_id = pi.id
       JOIN pottery_glazes pg ON pr.glaze_id = pg.id
       WHERE pr.id = ?
-    `).get(requestId);
+    `, [requestId]);
 
     return res.status(201).json({
       message: 'Pottery request submitted successfully',
@@ -180,7 +180,7 @@ router.post('/', requireAuth, requireCustomer, (req: Request, res: Response) => 
 });
 
 // PUT /api/pottery/:id - Customer edits pottery request (only while requested)
-router.put('/:id', requireAuth, (req: Request, res: Response) => {
+router.put('/:id', requireAuth, async (req: Request, res: Response) => {
   const user = req.user!;
   const isAdmin = user.role === 'admin' || user.role === 'studio';
 
@@ -192,7 +192,7 @@ router.put('/:id', requireAuth, (req: Request, res: Response) => {
   const requestId = req.params.id;
 
   try {
-    const existing = db.prepare('SELECT * FROM pottery_requests WHERE id = ?').get(requestId) as any;
+    const existing = await db.get<any>('SELECT * FROM pottery_requests WHERE id = ?', [requestId]);
 
     if (!existing) {
       return res.status(404).json({ error: 'Pottery request not found' });
@@ -216,10 +216,10 @@ router.put('/:id', requireAuth, (req: Request, res: Response) => {
     const newQty = quantity !== undefined ? Number(quantity) : existing.quantity;
     const newNeededDate = neededByDate !== undefined ? neededByDate : existing.needed_by_date;
 
-    const item = db.prepare('SELECT id FROM pottery_items WHERE id = ?').get(newItemId);
+    const item = await db.get('SELECT id FROM pottery_items WHERE id = ?', [newItemId]);
     if (!item) return res.status(400).json({ error: 'Invalid pottery item' });
 
-    const glaze = db.prepare('SELECT id FROM pottery_glazes WHERE id = ?').get(newGlazeId);
+    const glaze = await db.get('SELECT id FROM pottery_glazes WHERE id = ?', [newGlazeId]);
     if (!glaze) return res.status(400).json({ error: 'Invalid glaze' });
 
     if (isNaN(newQty) || !Number.isInteger(newQty) || newQty < 1 || newQty > 12) {
@@ -238,21 +238,21 @@ router.put('/:id', requireAuth, (req: Request, res: Response) => {
       });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE pottery_requests
       SET item_id = ?, glaze_id = ?, quantity = ?, needed_by_date = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND status = 'requested'
-    `).run(newItemId, newGlazeId, newQty, newNeededDate, requestId);
+    `, [newItemId, newGlazeId, newQty, newNeededDate, requestId]);
 
-    const updated = db.prepare(`
-      SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-             pr.quantity, pr.needed_by_date AS neededByDate, pr.status, pr.updated_at AS updatedAt,
-             pi.name AS itemName, pg.name AS glazeName
+    const updated = await db.get(`
+      SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+             pr.quantity, pr.needed_by_date AS "neededByDate", pr.status, pr.updated_at AS "updatedAt",
+             pi.name AS "itemName", pg.name AS "glazeName"
       FROM pottery_requests pr
       JOIN pottery_items pi ON pr.item_id = pi.id
       JOIN pottery_glazes pg ON pr.glaze_id = pg.id
       WHERE pr.id = ?
-    `).get(requestId);
+    `, [requestId]);
 
     return res.status(200).json({
       message: 'Pottery request updated successfully',
@@ -265,7 +265,7 @@ router.put('/:id', requireAuth, (req: Request, res: Response) => {
 });
 
 // PUT /api/pottery/:id/cancel - Customer cancels pottery request (only while requested)
-router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
+router.put('/:id/cancel', requireAuth, async (req: Request, res: Response) => {
   const user = req.user!;
   const isAdmin = user.role === 'admin' || user.role === 'studio';
 
@@ -276,7 +276,7 @@ router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
   const requestId = req.params.id;
 
   try {
-    const existing = db.prepare('SELECT * FROM pottery_requests WHERE id = ?').get(requestId) as any;
+    const existing = await db.get<any>('SELECT * FROM pottery_requests WHERE id = ?', [requestId]);
 
     if (!existing) {
       return res.status(404).json({ error: 'Pottery request not found' });
@@ -293,16 +293,16 @@ router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
       });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE pottery_requests
       SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(requestId);
+    `, [requestId]);
 
-    const updated = db.prepare(`
-      SELECT id, customer_id AS customerId, status, updated_at AS updatedAt
+    const updated = await db.get(`
+      SELECT id, customer_id AS "customerId", status, updated_at AS "updatedAt"
       FROM pottery_requests WHERE id = ?
-    `).get(requestId);
+    `, [requestId]);
 
     return res.status(200).json({
       message: 'Pottery request cancelled successfully',
@@ -315,7 +315,7 @@ router.put('/:id/cancel', requireAuth, (req: Request, res: Response) => {
 });
 
 // PUT /api/pottery/:id/status - Studio accepts or declines request (Admin only)
-router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Response) => {
+router.put('/:id/status', requireAuth, requireAdmin, async (req: Request, res: Response) => {
   try {
     const { status } = req.body;
     const requestId = req.params.id;
@@ -324,7 +324,7 @@ router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Respons
       return res.status(400).json({ error: "Status must be 'accepted' or 'declined'" });
     }
 
-    const existing = db.prepare('SELECT * FROM pottery_requests WHERE id = ?').get(requestId) as any;
+    const existing = await db.get<any>('SELECT * FROM pottery_requests WHERE id = ?', [requestId]);
     if (!existing) {
       return res.status(404).json({ error: 'Pottery request not found' });
     }
@@ -333,23 +333,23 @@ router.put('/:id/status', requireAuth, requireAdmin, (req: Request, res: Respons
       return res.status(400).json({ error: 'Cannot update status of a cancelled request' });
     }
 
-    db.prepare(`
+    await db.run(`
       UPDATE pottery_requests
       SET status = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ?
-    `).run(status, requestId);
+    `, [status, requestId]);
 
-    const updated = db.prepare(`
-      SELECT pr.id, pr.customer_id AS customerId, pr.item_id AS itemId, pr.glaze_id AS glazeId,
-             pr.quantity, pr.needed_by_date AS neededByDate, pr.status, pr.updated_at AS updatedAt,
-             pi.name AS itemName, pg.name AS glazeName,
-             u.name AS customerName, u.email AS customerEmail
+    const updated = await db.get(`
+      SELECT pr.id, pr.customer_id AS "customerId", pr.item_id AS "itemId", pr.glaze_id AS "glazeId",
+             pr.quantity, pr.needed_by_date AS "neededByDate", pr.status, pr.updated_at AS "updatedAt",
+             pi.name AS "itemName", pg.name AS "glazeName",
+             u.name AS "customerName", u.email AS "customerEmail"
       FROM pottery_requests pr
       JOIN pottery_items pi ON pr.item_id = pi.id
       JOIN pottery_glazes pg ON pr.glaze_id = pg.id
       JOIN users u ON pr.customer_id = u.id
       WHERE pr.id = ?
-    `).get(requestId);
+    `, [requestId]);
 
     return res.status(200).json({
       message: `Pottery request ${status} successfully`,

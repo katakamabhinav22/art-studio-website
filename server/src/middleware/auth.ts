@@ -9,6 +9,15 @@ export interface AuthUser {
   role: 'customer' | 'studio' | 'admin';
 }
 
+export class ApiHttpError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+    this.name = 'ApiHttpError';
+  }
+}
+
 declare global {
   namespace Express {
     interface Request {
@@ -37,7 +46,7 @@ export function verifyToken(token: string): AuthUser | null {
 }
 
 // Middleware to extract user from Authorization header or cookie
-export function authenticate(req: Request, res: Response, next: NextFunction) {
+export async function authenticate(req: Request, res: Response, next: NextFunction) {
   let token: string | undefined;
 
   // 1. Check Bearer Authorization header
@@ -60,15 +69,25 @@ export function authenticate(req: Request, res: Response, next: NextFunction) {
     return next();
   }
 
-  // Verify user still exists in database
-  const user = db.prepare('SELECT id, name, email, role FROM users WHERE id = ?').get(payload.id) as AuthUser | undefined;
-  if (!user) {
-    req.user = undefined;
-    return next();
-  }
+  try {
+    // Verify user still exists in database
+    const user = await db.get<AuthUser>(
+      'SELECT id, name, email, role FROM users WHERE id = ?',
+      [payload.id]
+    );
 
-  req.user = user;
-  next();
+    if (!user) {
+      req.user = undefined;
+      return next();
+    }
+
+    req.user = user;
+    next();
+  } catch (err) {
+    console.error('Error during authentication middleware:', err);
+    req.user = undefined;
+    next();
+  }
 }
 
 // Require user to be authenticated (HTTP 401 if not)

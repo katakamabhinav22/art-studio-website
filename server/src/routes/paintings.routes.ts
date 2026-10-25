@@ -1,18 +1,18 @@
 import { Router, Request, Response } from 'express';
 import crypto from 'node:crypto';
 import { db } from '../db/db.js';
-import { requireAuth, requireAdmin, requireCustomer } from '../middleware/auth.js';
+import { requireAuth, requireAdmin, requireCustomer, ApiHttpError } from '../middleware/auth.js';
 
 const router = Router();
 
 // GET /api/paintings - Browse painting catalogue
-router.get('/', (req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
-    const paintings = db.prepare(`
-      SELECT id, title, artist, description, price, image_url AS imageUrl, status, created_at AS createdAt
+    const paintings = await db.all(`
+      SELECT id, title, artist, description, price, image_url AS "imageUrl", status, created_at AS "createdAt"
       FROM paintings
       ORDER BY created_at ASC
-    `).all();
+    `);
 
     return res.status(200).json({ paintings });
   } catch (err: any) {
@@ -22,13 +22,13 @@ router.get('/', (req: Request, res: Response) => {
 });
 
 // GET /api/paintings/:id - Painting details
-router.get('/:id', (req: Request, res: Response) => {
+router.get('/:id', async (req: Request, res: Response) => {
   try {
-    const painting = db.prepare(`
-      SELECT id, title, artist, description, price, image_url AS imageUrl, status, created_at AS createdAt
+    const painting = await db.get(`
+      SELECT id, title, artist, description, price, image_url AS "imageUrl", status, created_at AS "createdAt"
       FROM paintings
       WHERE id = ?
-    `).get(req.params.id);
+    `, [req.params.id]);
 
     if (!painting) {
       return res.status(404).json({ error: 'Painting not found' });
@@ -42,7 +42,7 @@ router.get('/:id', (req: Request, res: Response) => {
 });
 
 // POST /api/paintings - Add new painting (Admin only)
-router.post('/', requireAuth, requireAdmin, (req: Request, res: Response) => {
+router.post('/', requireAuth, requireAdmin, async (req: Request, res: Response) => {
   try {
     const { title, artist, description, price, imageUrl } = req.body;
 
@@ -65,15 +65,15 @@ router.post('/', requireAuth, requireAdmin, (req: Request, res: Response) => {
       ? imageUrl.trim() 
       : 'images/placeholder.jpg';
 
-    db.prepare(`
+    await db.run(`
       INSERT INTO paintings (id, title, artist, description, price, image_url, status)
       VALUES (?, ?, ?, ?, ?, ?, 'available')
-    `).run(paintingId, title.trim(), artist.trim(), description.trim(), Math.round(numPrice), finalImageUrl);
+    `, [paintingId, title.trim(), artist.trim(), description.trim(), Math.round(numPrice), finalImageUrl]);
 
-    const created = db.prepare(`
-      SELECT id, title, artist, description, price, image_url AS imageUrl, status, created_at AS createdAt
+    const created = await db.get(`
+      SELECT id, title, artist, description, price, image_url AS "imageUrl", status, created_at AS "createdAt"
       FROM paintings WHERE id = ?
-    `).get(paintingId);
+    `, [paintingId]);
 
     return res.status(201).json({
       message: 'Painting added successfully',
@@ -86,10 +86,10 @@ router.post('/', requireAuth, requireAdmin, (req: Request, res: Response) => {
 });
 
 // PUT /api/paintings/:id - Edit painting (Admin only, only while available)
-router.put('/:id', requireAuth, requireAdmin, (req: Request, res: Response) => {
+router.put('/:id', requireAuth, requireAdmin, async (req: Request, res: Response) => {
   try {
     const paintingId = req.params.id;
-    const existing = db.prepare('SELECT * FROM paintings WHERE id = ?').get(paintingId) as any;
+    const existing = await db.get<any>('SELECT * FROM paintings WHERE id = ?', [paintingId]);
 
     if (!existing) {
       return res.status(404).json({ error: 'Painting not found' });
@@ -113,16 +113,16 @@ router.put('/:id', requireAuth, requireAdmin, (req: Request, res: Response) => {
     if (!newDescription) return res.status(400).json({ error: 'Description cannot be empty' });
     if (isNaN(newPrice) || newPrice <= 0) return res.status(400).json({ error: 'Price must be a positive number' });
 
-    db.prepare(`
+    await db.run(`
       UPDATE paintings
       SET title = ?, artist = ?, description = ?, price = ?, image_url = ?, updated_at = CURRENT_TIMESTAMP
       WHERE id = ? AND status = 'available'
-    `).run(newTitle, newArtist, newDescription, newPrice, newImageUrl, paintingId);
+    `, [newTitle, newArtist, newDescription, newPrice, newImageUrl, paintingId]);
 
-    const updated = db.prepare(`
-      SELECT id, title, artist, description, price, image_url AS imageUrl, status, updated_at AS updatedAt
+    const updated = await db.get(`
+      SELECT id, title, artist, description, price, image_url AS "imageUrl", status, updated_at AS "updatedAt"
       FROM paintings WHERE id = ?
-    `).get(paintingId);
+    `, [paintingId]);
 
     return res.status(200).json({
       message: 'Painting updated successfully',
@@ -135,62 +135,57 @@ router.put('/:id', requireAuth, requireAdmin, (req: Request, res: Response) => {
 });
 
 // POST /api/paintings/:id/purchase - Customer purchases available painting
-router.post('/:id/purchase', requireAuth, requireCustomer, (req: Request, res: Response) => {
+router.post('/:id/purchase', requireAuth, requireCustomer, async (req: Request, res: Response) => {
   const paintingId = req.params.id;
   const customerId = req.user!.id;
+  const orderId = crypto.randomUUID();
 
   try {
-    db.exec('BEGIN IMMEDIATE');
+    let createdOrder: any;
 
-    const painting = db.prepare('SELECT * FROM paintings WHERE id = ?').get(paintingId) as any;
+    await db.transaction(async (tx) => {
+      const painting = await tx.get<any>('SELECT * FROM paintings WHERE id = ?', [paintingId]);
 
-    if (!painting) {
-      db.exec('ROLLBACK');
-      return res.status(404).json({ error: 'Painting not found' });
-    }
+      if (!painting) {
+        throw new ApiHttpError(404, 'Painting not found');
+      }
 
-    if (painting.status !== 'available') {
-      db.exec('ROLLBACK');
-      return res.status(400).json({ error: 'This painting is already sold and no longer available' });
-    }
+      if (painting.status !== 'available') {
+        throw new ApiHttpError(400, 'This painting is already sold and no longer available');
+      }
 
-    // Atomic update
-    const updateResult = db.prepare(`
-      UPDATE paintings
-      SET status = 'sold', updated_at = CURRENT_TIMESTAMP
-      WHERE id = ? AND status = 'available'
-    `).run(paintingId);
+      // Atomic update
+      const updateResult = await tx.run(`
+        UPDATE paintings
+        SET status = 'sold', updated_at = CURRENT_TIMESTAMP
+        WHERE id = ? AND status = 'available'
+      `, [paintingId]);
 
-    if (updateResult.changes === 0) {
-      db.exec('ROLLBACK');
-      return res.status(409).json({ error: 'This painting was just purchased by another customer' });
-    }
+      if (updateResult.changes === 0) {
+        throw new ApiHttpError(409, 'This painting was just purchased by another customer');
+      }
 
-    const orderId = crypto.randomUUID();
-    db.prepare(`
-      INSERT INTO orders (id, customer_id, painting_id, price, status)
-      VALUES (?, ?, ?, ?, 'placed')
-    `).run(orderId, customerId, paintingId, painting.price);
+      await tx.run(`
+        INSERT INTO orders (id, customer_id, painting_id, price, status)
+        VALUES (?, ?, ?, ?, 'placed')
+      `, [orderId, customerId, paintingId, painting.price]);
 
-    db.exec('COMMIT');
-
-    const createdOrder = db.prepare(`
-      SELECT o.id, o.customer_id AS customerId, o.painting_id AS paintingId, o.price, o.status, o.created_at AS createdAt,
-             p.title AS paintingTitle, p.artist AS paintingArtist, p.image_url AS paintingImageUrl
-      FROM orders o
-      JOIN paintings p ON o.painting_id = p.id
-      WHERE o.id = ?
-    `).get(orderId);
+      createdOrder = await tx.get(`
+        SELECT o.id, o.customer_id AS "customerId", o.painting_id AS "paintingId", o.price, o.status, o.created_at AS "createdAt",
+               p.title AS "paintingTitle", p.artist AS "paintingArtist", p.image_url AS "paintingImageUrl"
+        FROM orders o
+        JOIN paintings p ON o.painting_id = p.id
+        WHERE o.id = ?
+      `, [orderId]);
+    });
 
     return res.status(201).json({
       message: 'Painting purchased successfully',
       order: createdOrder,
     });
   } catch (err: any) {
-    try {
-      db.exec('ROLLBACK');
-    } catch {
-      // rollback may fail if not inside tx
+    if (err instanceof ApiHttpError) {
+      return res.status(err.status).json({ error: err.message });
     }
     console.error('Error during painting purchase:', err);
     return res.status(500).json({ error: 'Failed to process purchase' });

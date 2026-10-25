@@ -26,7 +26,7 @@ router.post('/register', async (req: Request, res: Response) => {
     const normalizedEmail = email.trim().toLowerCase();
 
     // Check duplicate email
-    const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+    const existing = await db.get<{ id: string }>('SELECT id FROM users WHERE email = ?', [normalizedEmail]);
     if (existing) {
       return res.status(400).json({ error: 'An account with this email already exists' });
     }
@@ -36,10 +36,10 @@ router.post('/register', async (req: Request, res: Response) => {
     const hashedPassword = await bcrypt.hash(password, 10);
     const userId = crypto.randomUUID();
 
-    db.prepare(`
-      INSERT INTO users (id, name, email, password, role)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(userId, name.trim(), normalizedEmail, hashedPassword, role);
+    await db.run(
+      'INSERT INTO users (id, name, email, password, role) VALUES (?, ?, ?, ?, ?)',
+      [userId, name.trim(), normalizedEmail, hashedPassword, role]
+    );
 
     const user: AuthUser = {
       id: userId,
@@ -79,9 +79,13 @@ router.post('/login', async (req: Request, res: Response) => {
     }
 
     const normalizedEmail = String(email).trim().toLowerCase();
-    const user = db.prepare('SELECT id, name, email, password, role FROM users WHERE email = ?').get(normalizedEmail) as
-      | { id: string; name: string; email: string; password: string; role: 'customer' | 'studio' | 'admin' }
-      | undefined;
+    const user = await db.get<{
+      id: string;
+      name: string;
+      email: string;
+      password: string;
+      role: 'customer' | 'studio' | 'admin';
+    }>('SELECT id, name, email, password, role FROM users WHERE email = ?', [normalizedEmail]);
 
     if (!user) {
       return res.status(401).json({ error: 'Invalid email or password' });
